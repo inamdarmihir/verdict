@@ -102,8 +102,6 @@ ignore_missing_imports = true
 module = [
   "qdrant_client.*",
   "langgraph.*",
-  "langchain_core.*",
-  "numpy.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
