@@ -1,6 +1,19 @@
+<div align="center">
+
 # Verdict
 
 **A working risk classifier for agentic software factories.**
+
+[![License](https://img.shields.io/github/license/inamdarmihir/verdict?style=flat-square&color=5B5BD6)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.11%2B-3572A5?style=flat-square)
+[![CI](https://img.shields.io/github/actions/workflow/status/inamdarmihir/verdict/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/inamdarmihir/verdict/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/inamdarmihir/verdict?style=flat-square&color=FB6A76)](https://github.com/inamdarmihir/verdict/stargazers)
+
+**[Design article](https://aihive.hashnode.dev/verdict-a-working-risk-classifier-for-agentic-software-factories)** · **[License](#license)**
+
+</div>
+
+---
 
 Verdict gives an agentic coding loop a structural way to recognize when its own stop condition cannot measure what actually matters for a step — and to route that step to a human instead of grinding forward on a passing-but-blind signal.
 
@@ -256,3 +269,7 @@ CI runs the same checks on Python 3.11 and 3.12 (see [`.github/workflows/ci.yml`
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+---
+
+<div align="center"><sub>Part of the <a href="https://aihive.hashnode.dev">AIHive</a> series — <a href="https://aihive.hashnode.dev/verdict-a-working-risk-classifier-for-agentic-software-factories">read the design article</a></sub></div>
