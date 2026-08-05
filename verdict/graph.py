@@ -1,11 +1,32 @@
-"""Optional LangGraph supervisor that routes through Verdict."""
+"""Optional LangGraph supervisor that routes every step through Verdict.
+
+This module is a *caller* of the five core components, not a hard dependency
+of them. Install the optional extra::
+
+    pip install -e ".[langgraph]"
+
+Flow per step::
+
+    classify → bounded_exec | escalate → checkpoint → calibrate
+
+Wiring mirrors the design-spec supervisor sketch in ``docs/DESIGN.md``
+(Installing and Using Verdict): ``classifier.score`` stays a pure function of
+a :class:`~verdict.classifier.ProposedStep`; graph state is never pushed into
+the classifier.
+
+Public helpers
+--------------
+* ``SupervisorState`` — typed dict for the compiled graph
+* ``build_verdict_graph`` — classify → route → checkpoint → calibrate
+* ``default_demo_classifier`` — offline factory used by examples/tests
+"""
 
 from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Any, Literal, TypedDict
 
-from verdict.calibration import InMemoryCalibrationStore
+from verdict.calibration import InMemoryCalibrationStore, outcome_label
 from verdict.checkpoint import CheckpointCommit
 from verdict.classifier import (
     ClassifierConfig,
@@ -20,6 +41,12 @@ from verdict.executor import BoundedExecutor
 
 
 class SupervisorState(TypedDict, total=False):
+    """LangGraph state for one Verdict-gated step (or a small step batch).
+
+    Only ``steps`` and ``step_index`` are required at invoke time; the remaining
+    fields are filled by graph nodes as the step progresses.
+    """
+
     steps: list[ProposedStep]
     step_index: int
     risk: RiskScore
@@ -44,8 +71,32 @@ def build_verdict_graph(
 ) -> Any:
     """Build a LangGraph that classify → bounded|escalate → checkpoint → calibrate.
 
-    Requires the optional ``langgraph`` extra:
-    ``pip install 'verdict-agents[langgraph]'``.
+    Requires the optional ``langgraph`` extra::
+
+        pip install 'verdict-agents[langgraph]'
+
+    Parameters
+    ----------
+    classifier:
+        Preconfigured :class:`~verdict.classifier.RiskClassifier`.
+    executor:
+        :class:`~verdict.executor.BoundedExecutor` wrapping your agent function.
+    contract_registry:
+        ``task_class → VerifierContract`` map (same registry the classifier uses).
+    checkpointer:
+        :class:`~verdict.checkpoint.CheckpointCommit` for repo-state boundaries.
+        Graph resumability uses LangGraph's ``MemorySaver`` internally.
+    repo:
+        Logical repo name stored on calibration records.
+    calibration_store:
+        Optional store for ``record`` / ``recalibrate`` after each step.
+    use_interrupt:
+        When ``True``, the escalate node calls LangGraph ``interrupt()`` and
+        waits for a human decision. When ``False`` (demos/tests), auto-redirects.
+
+    Returns
+    -------
+    Compiled LangGraph app (invoke with ``{\"steps\": [...], \"step_index\": 0}``).
     """
     try:
         from langgraph.checkpoint.memory import MemorySaver
@@ -142,12 +193,11 @@ def build_verdict_graph(
         risk = state["risk"]
         outcome = state.get("escalation_outcome")
         last = state.get("last_result")
-        if outcome == "rejected" or (last is not None and not last.passed and outcome is None):
-            label = 1.0
-        elif outcome == "redirected":
-            label = 0.5
-        else:
-            label = 0.0
+        bounded_passed = last.passed if last is not None else None
+        label = outcome_label(
+            escalation_outcome=outcome,
+            bounded_passed=bounded_passed,
+        )
         store.record(repo=repo, step=step, risk=risk, label=label, notes=state.get("human_notes"))
         iterations = last.iterations_used if last is not None else 0
         max_iters = 2
@@ -186,7 +236,11 @@ def default_demo_classifier(
     *,
     class_priors: dict[str, float] | None = None,
 ) -> tuple[RiskClassifier, InMemoryCalibrationStore, dict[str, Any]]:
-    """Convenience factory used by examples and integration tests."""
+    """Convenience factory used by examples and integration tests.
+
+    Returns ``(classifier, in_memory_store, registry)`` with design-spec priors
+    so the mechanical-rename vs architectural-boundary contrast runs offline.
+    """
     from verdict.contracts import always_pass_contract
 
     registry: dict[str, Any] = contract_registry or {
@@ -208,6 +262,7 @@ def default_demo_classifier(
 
 
 def _package_payload(package: ReviewPackage) -> dict[str, Any]:
+    """Serialize a review package for LangGraph interrupt payloads."""
     payload = asdict(package)
     risk = payload.get("risk")
     if isinstance(risk, dict) and isinstance(risk.get("route"), Route):

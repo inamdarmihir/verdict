@@ -1,17 +1,35 @@
 #!/usr/bin/env python3
 """End-to-end LangGraph supervisor wired to Verdict.
 
-Model: OpenAI ``gpt-5.6-sol`` (alias ``gpt-5.6``) — verified as the current
-frontier model in OpenAI's model docs and exercised via ``langchain-openai``'s
-``ChatOpenAI`` integration (see LangChain OpenAI chat docs).
+Flow per step (see ``docs/DESIGN.md`` and ``verdict.graph``)::
 
-Usage:
-  export OPENAI_API_KEY=sk-...
-  pip install -e '.[langgraph]'
-  python examples/langgraph_supervisor.py
+    classify → bounded_exec | escalate → checkpoint → calibrate
 
-Without an API key the demo still runs the Verdict routing path using a
-deterministic stub agent (no model calls).
+Model note
+----------
+When ``OPENAI_API_KEY`` is set, the bounded executor uses OpenAI
+``gpt-5.6-sol`` (alias ``gpt-5.6``) via ``langchain-openai``'s ``ChatOpenAI``.
+Override with ``VERDICT_MODEL``. Without a key the demo still exercises the
+full Verdict routing path using a deterministic stub agent.
+
+Setup
+-----
+::
+
+    pip install -e ".[langgraph]"
+
+    # Offline (recommended first run — no model calls)
+    python examples/langgraph_supervisor.py
+
+    # Live model (optional)
+    cp .env.example .env   # then set OPENAI_API_KEY
+    export OPENAI_API_KEY=sk-...
+    export VERDICT_MODEL=gpt-5.6-sol   # default
+    python examples/langgraph_supervisor.py
+
+Expected trailer::
+
+    OK: LangGraph supervisor routed rename→bounded, boundary→escalate
 """
 
 from __future__ import annotations
@@ -37,7 +55,11 @@ DEFAULT_MODEL = os.environ.get("VERDICT_MODEL", "gpt-5.6-sol")
 
 
 def build_agent_fn(model_name: str = DEFAULT_MODEL):
-    """Return an agent_fn. Uses ChatOpenAI when OPENAI_API_KEY is set."""
+    """Return ``(agent_fn, active_model_or_None)``.
+
+    Uses ``ChatOpenAI`` when ``OPENAI_API_KEY`` is set; otherwise a no-op stub
+    so the supervisor graph can be verified offline.
+    """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
 
@@ -67,6 +89,14 @@ def build_agent_fn(model_name: str = DEFAULT_MODEL):
 
 
 def run_demo(*, use_model: bool = True) -> dict[str, Any]:
+    """Run rename + boundary steps through the compiled Verdict graph.
+
+    Parameters
+    ----------
+    use_model:
+        When ``False``, force the stub agent even if an API key is present
+        (used by integration tests).
+    """
     classifier, store, registry = default_demo_classifier(
         contract_registry={
             "rename": always_pass_contract("rename"),
@@ -81,6 +111,7 @@ def run_demo(*, use_model: bool = True) -> dict[str, Any]:
 
     executor = BoundedExecutor(agent_fn)
     checkpointer = CheckpointCommit(repo_path=str(ROOT), use_git=False)
+    # use_interrupt=False → auto-redirect on escalate (non-interactive demo).
     app = build_verdict_graph(
         classifier=classifier,
         executor=executor,
@@ -148,6 +179,7 @@ def run_demo(*, use_model: bool = True) -> dict[str, Any]:
 
 
 def main() -> None:
+    """Print the demo report and assert design-spec routing."""
     report = run_demo(use_model=True)
     print(json.dumps(report, indent=2))
     rename = next(o for o in report["outcomes"] if o["step_id"] == "lg-rename")

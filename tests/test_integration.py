@@ -75,6 +75,8 @@ def test_package_exports_stable() -> None:
     assert verdict.__version__ == "0.1.0"
     assert hasattr(verdict, "RiskClassifier")
     assert hasattr(verdict, "CalibrationStore")
+    assert hasattr(verdict, "outcome_label")
+    assert (Path(verdict.__file__).parent / "py.typed").is_file()
 
 
 def test_worked_example_cli() -> None:

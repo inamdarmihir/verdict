@@ -1,7 +1,25 @@
 #!/usr/bin/env python3
 """Worked example from the design spec: mechanical rename vs architectural boundary.
 
-Runs entirely offline (no API key, no Qdrant) using InMemoryCalibrationStore.
+This is the end-to-end contrast in ``docs/DESIGN.md`` § Worked Example:
+
+* **Step A** — rename ``CustomerDTO`` → ``CustomerRecord`` (verifier exists,
+  low historical rate) → routes to **bounded** execution (R ≈ 0.3125).
+* **Step B** — extract a billing service boundary (no honest verifier, high
+  historical rate) → routes to **escalate** (R ≈ 0.7175).
+
+Setup (offline — no API keys, no Qdrant)
+----------------------------------------
+From the repository root::
+
+    pip install -e .
+    python examples/worked_example.py
+    # equivalent:
+    python -m verdict
+
+Expected console trailer::
+
+    OK: Step A → bounded, Step B → escalate
 """
 
 from __future__ import annotations
@@ -23,14 +41,21 @@ from verdict.executor import BoundedExecutor
 
 
 def _noop_agent(step: ProposedStep, instruction: str) -> None:
+    """Stub agent: demos score routing without mutating the working tree."""
     del step, instruction
 
 
 def run() -> dict[str, object]:
+    """Score both design-spec steps and exercise bounded / escalate paths.
+
+    Returns a JSON-serializable report used by tests and the CLI.
+    """
+    # Only "rename" has a verifier. Absence of "boundary" is a hard signal.
     registry = {
         "rename": always_pass_contract("rename"),
-        # intentionally no "boundary" contract — absence is a hard signal
     }
+    # Class priors reproduce the design-spec historical rates before any
+    # incidents are recorded (InMemoryCalibrationStore cold-start path).
     store = InMemoryCalibrationStore(
         class_priors={"rename": 0.05, "boundary": 0.62, "general": 0.2}
     )
@@ -109,6 +134,7 @@ def run() -> dict[str, object]:
 
 
 def main() -> None:
+    """Print the report and exit non-zero if routing disagrees with the design."""
     report = run()
     print(json.dumps(report, indent=2))
     a_ok = report["step_a"]["route"] == "bounded"  # type: ignore[index]

@@ -56,6 +56,9 @@ Documentation = "https://github.com/inamdarmihir/verdict#readme"
 Design = "https://github.com/inamdarmihir/verdict/blob/main/docs/DESIGN.md"
 Issues = "https://github.com/inamdarmihir/verdict/issues"
 
+[project.scripts]
+verdict = "verdict.__main__:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["verdict"]
 

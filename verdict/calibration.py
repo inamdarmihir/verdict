@@ -1,4 +1,31 @@
-"""Qdrant-backed calibration store for historical incident rates."""
+"""Component Five — CalibrationStore: Qdrant-backed incident memory.
+
+Every escalation outcome and every autonomous failure caught by the executor's
+retry cap becomes a labeled example. Mining these back into the risk classifier
+keeps the boundary between "loop it" and "escalate it" from being a fixed guess.
+
+Label table (see ``docs/DESIGN.md``, Component Five)
+----------------------------------------------------
+======= ============================================= =====
+Event   Meaning                                       label
+======= ============================================= =====
+reject / verifier exhausted                           1.0
+escalation redirected                                 0.5
+escalation approved / bounded pass (no later revert)  0.0
+======= ============================================= =====
+
+``historical_rate`` queries *similar* past steps (embeddings + ``task_class``
+filter), not only exact class matches. ``recalibrate`` only ever nudges
+``tau``, never the signal weights ``w_v``, ``w_f``, ``w_h``.
+
+Teams without Qdrant yet can use :class:`InMemoryCalibrationStore` — same
+public methods, hashed bag-of-tokens embeddings by default.
+
+Public surface owned by this module
+-----------------------------------
+* ``CalibrationStore``, ``InMemoryCalibrationStore``
+* ``IncidentRecord``, ``hashed_embed`` (helpers)
+"""
 
 from __future__ import annotations
 
@@ -27,6 +54,8 @@ EmbedFn = Callable[[str], Sequence[float]]
 
 @dataclass
 class IncidentRecord:
+    """One labeled calibration example (used by the in-memory store)."""
+
     task_class: str
     description: str
     incident: float
@@ -37,7 +66,60 @@ class IncidentRecord:
     vector: list[float] = field(default_factory=list)
 
 
+def outcome_label(
+    *,
+    escalation_outcome: str | None,
+    bounded_passed: bool | None,
+) -> float:
+    """Map a resolved step to the design-spec calibration label.
+
+    Parameters
+    ----------
+    escalation_outcome:
+        ``\"approved\"`` | ``\"redirected\"`` | ``\"rejected\"`` | ``None``
+        when the step never entered escalation.
+    bounded_passed:
+        ``True`` / ``False`` when a bounded run completed; ``None`` if none.
+
+    Returns
+    -------
+    float
+        ``1.0`` (incident), ``0.5`` (redirect), or ``0.0`` (clean / approved).
+    """
+    if escalation_outcome == "rejected":
+        return 1.0
+    if escalation_outcome == "redirected":
+        return 0.5
+    if escalation_outcome == "approved":
+        return 0.0
+    if bounded_passed is False:
+        return 1.0
+    return 0.0
+
+
 class CalibrationStore:
+    """Qdrant-backed store for step embeddings + incident labels.
+
+    Parameters
+    ----------
+    client:
+        Connected :class:`qdrant_client.QdrantClient` (URL, cloud, or ``\":memory:\"``).
+    embed_fn:
+        Maps ``\"{task_class}: {description}\"`` text to a dense vector. Vector
+        size is probed once at construction (override with ``vector_size``).
+    collection:
+        Qdrant collection name (created on first use).
+    vector_size:
+        Optional explicit dimensionality; defaults to ``len(embed_fn(probe))``.
+
+    Setup
+    -----
+    >>> from qdrant_client import QdrantClient  # doctest: +SKIP
+    >>> from verdict import CalibrationStore, RiskClassifier, ClassifierConfig
+    >>> client = QdrantClient(url="http://localhost:6333")  # or ":memory:"
+    >>> store = CalibrationStore(client, embed_fn=my_embed_fn)  # doctest: +SKIP
+    """
+
     def __init__(
         self,
         client: QdrantClient,
@@ -79,6 +161,7 @@ class CalibrationStore:
         label: float,
         notes: str | None = None,
     ) -> None:
+        """Upsert one labeled incident into Qdrant."""
         vector = list(self.embed_fn(f"{step.task_class}: {step.description}"))
         if len(vector) != self.vector_size:
             raise ValueError(f"embed_fn returned dim={len(vector)}, expected {self.vector_size}")
@@ -109,6 +192,11 @@ class CalibrationStore:
         fan_out: int,
         top_k: int = 20,
     ) -> float:
+        """Similarity-weighted mean incident label for similar past steps.
+
+        Cold start (no hits for ``task_class``) returns the design-spec prior
+        ``0.2``. ``fan_out`` is reserved for future payload-side boosting.
+        """
         del fan_out  # reserved for future payload-side boosting
         hits = self.client.query_points(
             collection_name=self.collection,
@@ -132,9 +220,12 @@ class CalibrationStore:
         iteration: int,
         max_iterations: int,
     ) -> None:
-        """Called after a step resolves. Nudges tau, never the weights, since
-        the weights encode a modeling choice about which signals matter and
-        tau encodes a cost tradeoff the team is entitled to move."""
+        """Nudge ``classifier.config.tau`` after a step resolves.
+
+        Never touches the signal weights. When a step exhausts its verifier
+        retries with a hard incident label (``label >= 1``), lower ``tau``
+        slightly (floor ``0.35``) so similar future work escalates earlier.
+        """
         if label >= 1.0 and iteration >= max_iterations:
             classifier.config.tau = max(0.35, classifier.config.tau - 0.02)
 
@@ -143,7 +234,9 @@ class InMemoryCalibrationStore:
     """Drop-in stub for tests and environments without Qdrant.
 
     Uses cosine similarity over caller-provided embeddings (or a hashed
-    bag-of-tokens fallback) so demos stay dependency-light.
+    bag-of-tokens fallback) so demos stay dependency-light. Optional
+    ``class_priors`` let the worked example reproduce the design-spec numbers
+    (``rename≈0.05``, ``boundary≈0.62``) before any incidents are recorded.
     """
 
     def __init__(
@@ -167,6 +260,7 @@ class InMemoryCalibrationStore:
         label: float,
         notes: str | None = None,
     ) -> None:
+        """Append one labeled incident to the in-memory list."""
         vector = list(self.embed_fn(f"{step.task_class}: {step.description}"))
         self.records.append(
             IncidentRecord(
@@ -189,6 +283,7 @@ class InMemoryCalibrationStore:
         fan_out: int,
         top_k: int = 20,
     ) -> float:
+        """In-memory analogue of :meth:`CalibrationStore.historical_rate`."""
         del fan_out
         pool = [r for r in self.records if r.task_class == task_class]
         if not pool:
@@ -210,6 +305,7 @@ class InMemoryCalibrationStore:
         iteration: int,
         max_iterations: int,
     ) -> None:
+        """Same tau-nudge policy as :meth:`CalibrationStore.recalibrate`."""
         if label >= 1.0 and iteration >= max_iterations:
             classifier.config.tau = max(0.35, classifier.config.tau - 0.02)
 
