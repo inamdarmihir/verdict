@@ -209,8 +209,16 @@ class CalibrationStore:
         ).points
         if not hits:
             return 0.2  # cold-start prior
-        num = sum(h.score * float(h.payload["incident"]) for h in hits if h.payload)
-        den = sum(h.score for h in hits) or 1.0
+        num = 0.0
+        den = 0.0
+        for hit in hits:
+            if not hit.payload:
+                continue
+            score = float(hit.score or 0.0)
+            num += score * float(hit.payload["incident"])
+            den += score
+        if den <= 0.0:
+            return 0.2
         return max(0.0, min(1.0, num / den))
 
     def recalibrate(
