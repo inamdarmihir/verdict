@@ -1,297 +1,132 @@
 <div align="center">
 
-# Verdict
+# verdict
 
-**A working risk classifier for agentic software factories.**
+**Risk classification for agentic coding loops — route high-risk steps to humans before they execute.**
 
-[![License](https://img.shields.io/github/license/inamdarmihir/verdict?style=flat-square&color=5B5BD6)](LICENSE)
-![Python](https://img.shields.io/badge/python-3.11%2B-3572A5?style=flat-square)
-[![CI](https://img.shields.io/github/actions/workflow/status/inamdarmihir/verdict/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/inamdarmihir/verdict/actions/workflows/ci.yml)
-[![Stars](https://img.shields.io/github/stars/inamdarmihir/verdict?style=flat-square&color=FB6A76)](https://github.com/inamdarmihir/verdict/stargazers)
-
-**[Design article](https://aihive.hashnode.dev/verdict-a-working-risk-classifier-for-agentic-software-factories)** · **[License](#license)**
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Qdrant](https://img.shields.io/badge/vector--db-Qdrant-red.svg)](https://qdrant.tech)
+[![Agno](https://img.shields.io/badge/agent-agno%20v2.8.6-blueviolet.svg)](https://github.com/agno-agi/agno)
+[![mem0](https://img.shields.io/badge/memory-mem0%20v3.0.0-green.svg)](https://mem0.ai)
+[![LangGraph](https://img.shields.io/badge/orchestration-LangGraph%20v1.2.10-orange.svg)](https://langchain-ai.github.io/langgraph/)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-informational.svg)](https://inamdarmihir.github.io/verdict/)
 
 </div>
 
 ---
 
-Verdict gives an agentic coding loop a structural way to recognize when its own stop condition cannot measure what actually matters for a step — and to route that step to a human instead of grinding forward on a passing-but-blind signal.
+## The Problem
 
-> Design thesis: a loop should refuse to terminate successfully when the verifiability gap \(G(t) = S(t) - M(\sigma_t)\) exceeds a threshold, even if tests are green.
+Coding agents take irreversible high-risk actions — deleting files, running migrations, mass refactors across hundreds of files — without human oversight. By the time you notice, the damage is done.
 
-The full design spec lives in [`docs/DESIGN.md`](docs/DESIGN.md).
+## The Solution
 
----
+**verdict** scores each proposed step with a **deterministic risk formula** (no LLM self-assessment). Low-risk steps run under a bounded executor with a verifier contract. High-risk steps generate a minimal human review package. All decisions calibrate a Qdrant-backed threshold via outcome feedback.
 
-## Why Verdict exists
-
-Loops excel at mechanically checkable work (failing tests, renames, lint). They fail silently on architectural decisions: the suite stays green while maintainability collapses. More review agents raise the floor; they do not create the missing oracle.
-
-Verdict makes that silence structural:
-
-1. **Classify** every step before it runs (deterministic signals, not LLM self-assessment)
-2. **Bound** low-risk steps under an explicit verifier contract + iteration cap
-3. **Escalate** high-risk / exhausted steps into a minimal human review package
-4. **Checkpoint** at every merge point (git blast-radius boundary)
-5. **Calibrate** escalation outcomes back into a Qdrant-backed incident memory
-
-## Architecture
+## Risk Formula
 
 ```
-                 ProposedStep
-                      │
-                      ▼
-               ┌─────────────┐
-               │  classifier  │──▶ RiskScore
-               └──────┬───────┘
-               risk.route.value
-         ┌────────────┴────────────┐
-         ▼                          ▼
-  ┌────────────┐            ┌─────────────┐
-  │  executor   │            │ escalation   │
-  │ (bounded)   │            │ (HITL)       │
-  └──────┬─────┘            └──────┬──────┘
-         └─────────────┬────────────┘
-                       ▼
-                 ┌────────────┐
-                 │ checkpoint  │  git SHA / blast radius
-                 └─────┬──────┘
-                       ▼
-                 ┌────────────┐
-                 │ calibration │  Qdrant incident memory
-                 └────────────┘
+R(t) = w_v × (1 - verifier_exists)
+     + w_f × normalized_fan_out
+     + w_h × historical_incident_rate
+
+w_v = 0.50  |  w_f = 0.30  |  w_h = 0.20  |  threshold τ = 0.55
 ```
 
-| Module | Public API | Responsibility |
-|--------|------------|----------------|
-| `verdict.classifier` | `RiskClassifier`, `ProposedStep`, `RiskScore` | Score risk from verifier existence, fan-out, history |
-| `verdict.contracts` | `VerifierContract`, `ExecutionResult` | Environment + instruction + scoring fn |
-| `verdict.executor` | `BoundedExecutor` | Cap retries; return exhaustion as data |
-| `verdict.escalation` | `EscalationArtifact`, `ReviewPackage` | Minimal human review package |
-| `verdict.checkpoint` | `CheckpointCommit` | Repo-state blast-radius boundary |
-| `verdict.calibration` | `CalibrationStore`, `InMemoryCalibrationStore` | Historical incident rate + τ nudges |
-| `verdict.graph` | `build_verdict_graph` | Optional LangGraph supervisor wiring |
+## Routing Logic
 
-Risk score:
+| Risk Score | Route | What happens |
+|---|---|---|
+| R < 0.55 | `BoundedExecutor` | Run with verifier contract + iteration cap |
+| R ≥ 0.55 | `EscalationArtifact` | Build review package for human |
+| Exhausted | `EscalationArtifact` | Cap hit — human decides |
 
-\[
-R(t) = w_v \cdot (1 - \mathbb{1}_{\text{verifier}}(t)) + w_f \cdot \tilde{f}(t) + w_h \cdot h(t)
-\]
+## How It Works
 
-Defaults: \(w_v=0.45\), \(w_f=0.30\), \(w_h=0.25\), \(\tau=0.55\), \(F_{\max}=8\). Escalate when \(R(t) \ge \tau\).
+```
+ProposedStep
+  │
+  ▼
+RiskClassifier.classify()
+  ├─ verifier_exists? ← VerifierContract
+  ├─ fan_out count
+  └─ historical_incident_rate ← Qdrant CalibrationStore
+  │
+  ├── R < τ → BoundedExecutor(verifier, cap)
+  │            └── success → CheckpointCommit → CalibrationStore.record(OK)
+  │
+  └── R ≥ τ → EscalationArtifact → ReviewPackage
+                   └── human decision → CalibrationStore.record(label)
+                                          ├─ τ nudge ± 0.02
+                                          └─ mem0 — outcome history
+```
 
-## Requirements
-
-- Python 3.11+
-- [`qdrant-client`](https://github.com/qdrant/qdrant-client) (core)
-- Optional host loop: [LangGraph](https://langchain-ai.github.io/langgraph/) + [langchain-openai](https://python.langchain.com/docs/integrations/chat/openai/)
-
-### Model verification (LangGraph + OpenAI)
-
-The end-to-end LangGraph demo targets **`gpt-5.6-sol`** (alias **`gpt-5.6`**):
-
-| Source | Finding |
-|--------|---------|
-| [OpenAI Models](https://developers.openai.com/api/docs/models) | GPT-5.6 Sol is the current frontier model for complex reasoning/coding; `gpt-5.6` routes to `gpt-5.6-sol` |
-| [LangChain OpenAI chat integration](https://docs.langchain.com/oss/python/integrations/chat/openai) | `ChatOpenAI(model="gpt-5.6-sol")` is documented and supported |
-| Package versions used | `langgraph>=1.2`, `langchain-openai>=1.4`, `qdrant-client>=1.18` |
-
-Override with `VERDICT_MODEL` if needed. The demo runs offline without an API key (deterministic stub agent).
-
-## Setup (end-to-end)
-
-Prerequisites: **Python 3.11+** and a clone of this repository.
+## Quick Start
 
 ```bash
-git clone https://github.com/inamdarmihir/verdict.git
-cd verdict
-
-# Library only (pulls in qdrant-client)
-pip install -e .
-
-# Optional: LangGraph + OpenAI host-loop extras
-pip install -e ".[langgraph]"
-
-# Optional: lint, typecheck, tests
-pip install -e ".[dev]"
-
-# Copy env template if you plan to call a live model
-cp .env.example .env
+pip install verdict-agents
+docker run -p 6333:6333 qdrant/qdrant
 ```
-
-Verify the offline path (no API keys, no Qdrant):
-
-```bash
-python -m verdict
-# or, after install:
-verdict
-```
-
-You should see Step A → `bounded` and Step B → `escalate`. Full module docs live in
-each file under `verdict/` (aligned with [`docs/DESIGN.md`](docs/DESIGN.md)).
-
-## Quick start
 
 ```python
-from verdict import (
-    RiskClassifier,
-    ClassifierConfig,
-    ProposedStep,
-    InMemoryCalibrationStore,
-    BoundedExecutor,
-    EscalationArtifact,
-    CheckpointCommit,
-    Route,
-)
-from verdict.contracts import always_pass_contract
+from verdict import RiskClassifier, BoundedExecutor
+from verdict.classifier import ProposedStep
+from verdict.memory import build_memory
 
-registry = {"rename": always_pass_contract("rename")}
-store = InMemoryCalibrationStore(class_priors={"rename": 0.05, "boundary": 0.62})
-classifier = RiskClassifier(ClassifierConfig(), registry, store)
+classifier = RiskClassifier()
+memory = build_memory()
 
 step = ProposedStep(
-    step_id="1",
-    description="Extract billing into a separate service",
-    planned_files=["billing/service.py", "billing/facade.py", "app/main.py"],
-    task_class="boundary",
+    description="rename variable across 3 files",
+    has_verifier=True,
+    fan_out=3,
 )
-risk = classifier.score(step)
-
-if risk.route == Route.BOUNDED:
-    result = BoundedExecutor(agent_fn).run(step, registry[step.task_class])
-else:
-    package = EscalationArtifact.build(step, [], risk)
-    # hand package to your HITL / LangGraph interrupt()
+result = classifier.classify(step)
+print(result.route)        # Route.bounded_exec
+print(result.risk_score)   # 0.31
 ```
 
-### LangGraph wiring
+## LangGraph Supervisor
 
 ```python
-from verdict.graph import build_verdict_graph, default_demo_classifier
-from verdict.executor import BoundedExecutor
-from verdict.checkpoint import CheckpointCommit
+from verdict.graph import build_verdict_graph
 
-classifier, store, registry = default_demo_classifier()
-app = build_verdict_graph(
-    classifier=classifier,
-    executor=BoundedExecutor(agent_fn),
-    contract_registry=registry,
-    checkpointer=CheckpointCommit(".", use_git=True),
-    calibration_store=store,
-)
+graph = build_verdict_graph()
+result = graph.invoke({
+    "step": {"description": "run database migration on prod", "has_verifier": False, "fan_out": 1},
+    "threshold": 0.55,
+})
+print(result["route"])  # escalate
 ```
 
-See [`examples/langgraph_supervisor.py`](examples/langgraph_supervisor.py) for a complete runnable supervisor.
-
-## Worked example (offline)
-
-The design-spec contrast — mechanical rename vs architectural boundary — runs with no API keys:
-
-```bash
-python examples/worked_example.py
-# or
-python -m verdict
-```
-
-Expected routing:
-
-| Step | Task | \(R(t)\) | Route |
-|------|------|----------|-------|
-| A | Rename `CustomerDTO` → `CustomerRecord` (verifier exists, \(h\approx0.05\)) | **0.3125** | `bounded` |
-| B | Extract billing service (no verifier, \(h\approx0.62\)) | **0.7175** | `escalate` |
-
-## End-to-end LangGraph demo
-
-```bash
-pip install -e ".[langgraph]"
-
-# Offline (no model calls)
-python examples/langgraph_supervisor.py
-
-# Live model (optional)
-export OPENAI_API_KEY=sk-...
-export VERDICT_MODEL=gpt-5.6-sol   # default
-python examples/langgraph_supervisor.py
-```
-
-Flow per step: `classify → bounded_exec|escalate → checkpoint → calibrate`.
-
-## Qdrant calibration
+## Agno Risk Supervisor
 
 ```python
-from qdrant_client import QdrantClient
-from verdict import CalibrationStore, RiskClassifier, ClassifierConfig
+from verdict.agno_agent import build_agno_risk_supervisor
 
-client = QdrantClient(url="http://localhost:6333")  # or QdrantClient(":memory:")
-store = CalibrationStore(client, embed_fn=my_embed_fn)  # vectors sized from embed_fn
-classifier = RiskClassifier(ClassifierConfig(), contract_registry, store)
+agent = build_agno_risk_supervisor(classifier, memory=memory)
+agent.print_response("Should I delete all files in /tmp/build? It has no verifier.")
 ```
 
-Labels recorded after each step:
+## Configuration
 
-| Event | Label \(\ell\) |
-|-------|----------------|
-| Escalation rejected / verifier exhausted | `1.0` |
-| Escalation redirected | `0.5` |
-| Escalation approved / bounded pass | `0.0` |
+| Variable | Default | Description |
+|---|---|---|
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant instance URL |
+| `OPENAI_API_KEY` | — | Required for Agno agent mode |
+| `VERDICT_THRESHOLD` | `0.55` | Risk threshold τ for routing |
+| `VERDICT_ITERATION_CAP` | `5` | Max retries in BoundedExecutor |
 
-`recalibrate` only ever nudges \(\tau\), never the signal weights.
+## Tech Stack
 
-## Project layout
-
-```
-verdict/
-  __init__.py          # public exports + package overview
-  classifier.py        # Component 1 — RiskClassifier
-  contracts.py         # Component 2 — VerifierContract, ExecutionResult
-  executor.py          # Component 2 — BoundedExecutor
-  escalation.py        # Component 3 — EscalationArtifact / ReviewPackage
-  checkpoint.py        # Component 4 — CheckpointCommit
-  calibration.py       # Component 5 — CalibrationStore (+ in-memory stub)
-  graph.py             # optional LangGraph supervisor wiring
-  __main__.py          # python -m verdict / `verdict` CLI
-  py.typed             # PEP 561 marker
-examples/
-  worked_example.py            # offline design-spec contrast
-  langgraph_supervisor.py      # end-to-end LangGraph demo
-tests/
-docs/
-  DESIGN.md            # design article / library specification
-.env.example           # optional OPENAI_API_KEY / QDRANT_URL / VERDICT_MODEL
-```
-
-## Development
-
-```bash
-pip install -e ".[dev]"
-
-ruff check verdict tests examples
-ruff format verdict tests examples
-mypy verdict
-pytest --cov=verdict
-```
-
-CI runs the same checks on Python 3.11 and 3.12 (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
-
-## Design notes
-
-- The classifier is deliberately boring: silent failure in the router reproduces the problem the library exists to prevent.
-- Host frameworks (LangGraph, custom supervisors, CI hooks) are callers, not hard dependencies of the core package.
-- `InMemoryCalibrationStore` lets you adopt Verdict before standing up Qdrant.
-- Checkpoint commits persist **repo** state (blast radius). Pair them with LangGraph’s `MemorySaver` (or similar) for **graph** resumability — different axes.
-
-## References
-
-- Design article: [`docs/DESIGN.md`](docs/DESIGN.md)
-- [LangGraph Human-in-the-Loop](https://langchain-ai.github.io/langgraph/concepts/human_in_the_loop/)
-- [LangGraph Persistence](https://langchain-ai.github.io/langgraph/concepts/persistence/)
-- [Qdrant Documentation](https://qdrant.tech/documentation)
-- [OpenAI GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+| Component | Purpose |
+|---|---|
+| [Qdrant](https://qdrant.tech) `>=1.18.0` | Calibration store + incident history |
+| [Agno](https://github.com/agno-agi/agno) `>=2.8.6` | Risk supervisor agent |
+| [mem0](https://mem0.ai) `>=3.0.0` | Step outcome memory |
+| [LangGraph](https://langchain-ai.github.io/langgraph/) `>=1.2.10` | classify→exec→calibrate graph |
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
-
----
-
-<div align="center"><sub>Part of the <a href="https://aihive.hashnode.dev">AIHive</a> series — <a href="https://aihive.hashnode.dev/verdict-a-working-risk-classifier-for-agentic-software-factories">read the design article</a></sub></div>
+MIT — see [LICENSE](LICENSE).
