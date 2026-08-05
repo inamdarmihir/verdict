@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-from verdict.calibration import InMemoryCalibrationStore, hashed_embed
+from verdict.calibration import InMemoryCalibrationStore, hashed_embed, outcome_label
 from verdict.classifier import ClassifierConfig, ProposedStep, RiskClassifier, RiskScore, Route
 from verdict.contracts import always_pass_contract
+
+
+def test_outcome_label_matches_design_table() -> None:
+    assert outcome_label(escalation_outcome="rejected", bounded_passed=None) == 1.0
+    assert outcome_label(escalation_outcome="redirected", bounded_passed=False) == 0.5
+    assert outcome_label(escalation_outcome="approved", bounded_passed=None) == 0.0
+    assert outcome_label(escalation_outcome=None, bounded_passed=True) == 0.0
+    assert outcome_label(escalation_outcome=None, bounded_passed=False) == 1.0
 
 
 def test_hashed_embed_is_deterministic() -> None:

@@ -1,4 +1,22 @@
-"""Verifier contracts: environment + instruction + scoring function."""
+"""Verifier contracts: environment + instruction + scoring function.
+
+Component Two of Verdict (paired with :mod:`verdict.executor`) borrows the
+three-part shape popularized by Harbor-style agent environments:
+
+* **environment** — sandbox constraints (cwd, network, timeout, …)
+* **instruction** — step description plus hard constraints
+* **scoring function** — returns a scalar in ``[0, 1]`` as an :class:`ExecutionResult`
+
+The contract is attached *before* the agent iterates, so the stop condition is
+not improvised mid-loop. Every autonomous step must name its oracle up front;
+if you cannot name one, :meth:`~verdict.classifier.RiskClassifier.score` should
+already have routed you to escalation.
+
+Public surface owned by this module
+-----------------------------------
+* ``ExecutionResult``, ``VerifierContract``
+* ``pytest_contract``, ``always_pass_contract``
+"""
 
 from __future__ import annotations
 
@@ -11,6 +29,23 @@ from verdict.classifier import ProposedStep
 
 @dataclass
 class ExecutionResult:
+    """Outcome of running a step under a :class:`VerifierContract`.
+
+    Exhaustion is a normal return value, not an exception — the escalation
+    module needs the full attempt history to build a useful review package.
+
+    Attributes
+    ----------
+    passed:
+        Whether the oracle considers the step done.
+    score:
+        Scalar in ``[0, 1]`` (typically ``1.0`` / ``0.0`` for pass/fail oracles).
+    details:
+        Truncated verifier output suitable for logs or review packages.
+    iterations_used:
+        How many agent attempts produced this result (set by the executor).
+    """
+
     passed: bool
     score: float
     details: str
@@ -19,6 +54,25 @@ class ExecutionResult:
 
 @dataclass
 class VerifierContract:
+    """Named oracle attached to a ``task_class`` before bounded execution.
+
+    Parameters
+    ----------
+    name:
+        Human-readable contract id (e.g. ``pytest:tests/test_billing.py``).
+    task_class:
+        Key used in the classifier's contract registry.
+    environment:
+        Sandbox metadata the host loop may enforce (cwd, network, timeout, …).
+    instruction_template:
+        Format string with a ``{description}`` placeholder filled from the step.
+    score_fn:
+        Callable that inspects the working tree (or other state) and returns an
+        :class:`ExecutionResult`.
+    max_iterations:
+        Default retry cap for :class:`~verdict.executor.BoundedExecutor`.
+    """
+
     name: str
     task_class: str
     environment: dict[str, Any]
@@ -28,6 +82,24 @@ class VerifierContract:
 
 
 def pytest_contract(test_path: str, repo_path: str) -> VerifierContract:
+    """Build a contract that scores a step by running ``pytest`` on ``test_path``.
+
+    The important property is not that every contract is a unit test — it is
+    that every autonomous step names its oracle up front.
+
+    Parameters
+    ----------
+    test_path:
+        Path (relative to ``repo_path``) passed to ``pytest``.
+    repo_path:
+        Working directory for the pytest subprocess.
+
+    Returns
+    -------
+    VerifierContract
+        A ``task_class="bugfix"`` contract with ``max_iterations=2``.
+    """
+
     def score_fn(step: ProposedStep) -> ExecutionResult:
         from subprocess import run
 
@@ -60,7 +132,11 @@ def pytest_contract(test_path: str, repo_path: str) -> VerifierContract:
 
 
 def always_pass_contract(task_class: str = "rename", name: str = "always-pass") -> VerifierContract:
-    """Deterministic contract useful for demos and unit tests."""
+    """Deterministic contract useful for demos, unit tests, and offline setup.
+
+    Use this while wiring Verdict into a host loop before you have a real
+    oracle for a mechanical ``task_class`` (e.g. renames with a grep gate).
+    """
 
     def score_fn(step: ProposedStep) -> ExecutionResult:
         return ExecutionResult(

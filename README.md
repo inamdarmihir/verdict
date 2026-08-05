@@ -98,18 +98,37 @@ The end-to-end LangGraph demo targets **`gpt-5.6-sol`** (alias **`gpt-5.6`**):
 
 Override with `VERDICT_MODEL` if needed. The demo runs offline without an API key (deterministic stub agent).
 
-## Install
+## Setup (end-to-end)
+
+Prerequisites: **Python 3.11+** and a clone of this repository.
 
 ```bash
-# Library only (qdrant-client)
+git clone https://github.com/inamdarmihir/verdict.git
+cd verdict
+
+# Library only (pulls in qdrant-client)
 pip install -e .
 
-# With LangGraph + OpenAI integration
+# Optional: LangGraph + OpenAI host-loop extras
 pip install -e ".[langgraph]"
 
-# Dev tools (lint, typecheck, tests)
+# Optional: lint, typecheck, tests
 pip install -e ".[dev]"
+
+# Copy env template if you plan to call a live model
+cp .env.example .env
 ```
+
+Verify the offline path (no API keys, no Qdrant):
+
+```bash
+python -m verdict
+# or, after install:
+verdict
+```
+
+You should see Step A → `bounded` and Step B → `escalate`. Full module docs live in
+each file under `verdict/` (aligned with [`docs/DESIGN.md`](docs/DESIGN.md)).
 
 ## Quick start
 
@@ -222,20 +241,23 @@ Labels recorded after each step:
 
 ```
 verdict/
-  __init__.py          # public exports
-  classifier.py        # RiskClassifier
-  contracts.py         # VerifierContract, ExecutionResult
-  executor.py          # BoundedExecutor
-  escalation.py        # EscalationArtifact / ReviewPackage
-  checkpoint.py        # CheckpointCommit
-  calibration.py       # CalibrationStore (+ in-memory stub)
-  graph.py             # optional LangGraph supervisor
+  __init__.py          # public exports + package overview
+  classifier.py        # Component 1 — RiskClassifier
+  contracts.py         # Component 2 — VerifierContract, ExecutionResult
+  executor.py          # Component 2 — BoundedExecutor
+  escalation.py        # Component 3 — EscalationArtifact / ReviewPackage
+  checkpoint.py        # Component 4 — CheckpointCommit
+  calibration.py       # Component 5 — CalibrationStore (+ in-memory stub)
+  graph.py             # optional LangGraph supervisor wiring
+  __main__.py          # python -m verdict / `verdict` CLI
+  py.typed             # PEP 561 marker
 examples/
-  worked_example.py
-  langgraph_supervisor.py
+  worked_example.py            # offline design-spec contrast
+  langgraph_supervisor.py      # end-to-end LangGraph demo
 tests/
 docs/
-  DESIGN.md            # original design article / spec
+  DESIGN.md            # design article / library specification
+.env.example           # optional OPENAI_API_KEY / QDRANT_URL / VERDICT_MODEL
 ```
 
 ## Development
