@@ -31,14 +31,17 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "qdrant-client>=1.12.0",
+  "qdrant-client>=1.18.0",
+  "agno>=2.8.6",
+  "mem0ai>=3.0.0",
+  "deepagents",
 ]
 
 [project.optional-dependencies]
 langgraph = [
-  "langgraph>=1.0.0",
-  "langchain-openai>=1.0.0",
-  "langchain-core>=1.0.0",
+  "langgraph>=1.2.10",
+  "langchain-openai>=1.4.0",
+  "langchain-core>=1.5.0",
 ]
 dev = [
   "pytest>=8.0",
